@@ -1,11 +1,11 @@
-/**
+/**/**
  * ПРИМЕР СЕРВЕРА USER BOT (Node.js)
  * 
  * Этот файл - пример того, как должен работать внешний сервер
  * Разместите его на бесплатном хостинге (Railway, Render, Fly.io)
  * 
  * УСТАНОВКА:
- * npm install telegram gramjs express axios
+ * npm install telegram express axios
  * 
  * НАСТРОЙКА:
  * 1. Получите API ключ Яндекс SpeechKit: https://cloud.yandex.ru/services/speechkit
@@ -77,11 +77,14 @@ app.post('/api/connect', async (req, res) => {
 });
 
 /**
- * Обработка команды .гс (ответ на голосовое)
+ * Обработка команды .гс (расшифровка голосового сообщения)
+ * 
+ * Пользователь отвечает на голосовое сообщение командой .гс
+ * Бот расшифровывает голосовое и отправляет расшифровку как ответ
  */
 app.post('/api/voice-reply', async (req, res) => {
   try {
-    const { userId, phone, apiId, apiHash, chatId, replyText } = req.body;
+    const { userId, phone, apiId, apiHash, chatId, messageId } = req.body;
     
     // Получаем клиент
     let client = clients.get(userId);
@@ -95,43 +98,44 @@ app.post('/api/voice-reply', async (req, res) => {
       clients.set(userId, client);
     }
     
-    // Получаем последние сообщения из чата
-    const messages = await client.getMessages(chatId, { limit: 10 });
+    // Получаем конкретное сообщение, на которое отвечаем
+    const voiceMessage = await client.getMessages(chatId, { ids: [messageId] });
     
-    // Ищем последнее голосовое сообщение
-    let voiceMessage = null;
-    for (const msg of messages) {
-      if (msg.voice) {
-        voiceMessage = msg;
-        break;
-      }
+    if (!voiceMessage || voiceMessage.length === 0) {
+      return res.json({ success: false, error: 'Сообщение не найдено' });
     }
     
-    if (!voiceMessage) {
-      return res.json({ success: false, error: 'Голосовое сообщение не найдено' });
+    const targetMessage = voiceMessage[0];
+    
+    // Проверяем, что это голосовое сообщение
+    if (!targetMessage.voice) {
+      return res.json({ success: false, error: 'Это не голосовое сообщение' });
     }
     
     // Скачиваем голосовое сообщение
-    const buffer = await client.downloadMedia(voiceMessage, {});
-    const audioPath = path.join(__dirname, `temp_${userId}.ogg`);
+    const buffer = await client.downloadMedia(targetMessage, {});
+    const audioPath = path.join(__dirname, `temp_${userId}_${Date.now()}.ogg`);
     fs.writeFileSync(audioPath, buffer);
     
     // Отправляем на Яндекс SpeechKit для расшифровки
     const transcription = await transcribeAudio(audioPath);
     
     // Удаляем временный файл
-    fs.unlinkSync(audioPath);
+    try {
+      fs.unlinkSync(audioPath);
+    } catch (e) {
+      // Игнорируем ошибки удаления
+    }
     
-    // Отправляем ответ в чат
+    // Отправляем расшифровку как ответ на голосовое сообщение
     await client.sendMessage(chatId, {
-      message: replyText,
-      replyTo: voiceMessage.id
+      message: `📝 Расшифровка:\n\n"${transcription}"`,
+      replyTo: targetMessage.id
     });
     
     // Отправляем результат в Workers
     await sendToWorkers(userId, 'voice_transcribed', {
-      text: transcription,
-      replyText: replyText
+      text: transcription
     });
     
     res.json({ success: true, transcription });
@@ -219,4 +223,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`User Bot server running on port ${PORT}`);
 });
+
 
