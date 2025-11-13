@@ -1,8 +1,5 @@
-/**/
- * ПРИМЕР СЕРВЕРА USER BOT (Node.js)
- * 
- * Этот файл - пример того, как должен работать внешний сервер
- * Разместите его на бесплатном хостинге (Railway, Render, Fly.io)
+/**
+ * User Bot Server для Telegram с интеграцией Яндекс SpeechKit
  * 
  * УСТАНОВКА:
  * npm install telegram express axios
@@ -223,6 +220,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`User Bot server running on port ${PORT}`);
 });
-
 
 
