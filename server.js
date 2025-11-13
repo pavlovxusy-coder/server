@@ -47,6 +47,9 @@ const clients = new Map();
 // Хранилище сессий (в реальности используйте базу данных)
 const sessions = new Map();
 
+// Хранилище phoneCodeHash для каждого пользователя
+const phoneCodeHashes = new Map();
+
 // Получить сохраненную сессию
 function getSavedSession(userId) {
   return sessions.get(userId) || null;
@@ -134,13 +137,25 @@ app.post('/api/connect', async (req, res) => {
     console.log('[/api/connect] Authorization status:', isAuthorized);
     
     if (!isAuthorized) {
+      // Проверяем, не отправляли ли мы уже код (чтобы не отправлять повторно)
+      const existingHash = phoneCodeHashes.get(userId);
+      if (existingHash && clients.get(userId)) {
+        console.log('[/api/connect] Code already sent, returning existing phoneCodeHash');
+        return res.json({ 
+          success: true, 
+          phoneCodeHash: existingHash,
+          requiresCode: true 
+        });
+      }
+      
       console.log('[/api/connect] Not authorized, sending code to:', phone);
       try {
         const result = await client.sendCode({ apiId, apiHash }, phone);
         console.log('[/api/connect] Code sent successfully, phoneCodeHash:', result.phoneCodeHash);
         
-        // Сохраняем клиент для последующего использования
+        // Сохраняем клиент и phoneCodeHash для последующего использования
         clients.set(userId, client);
+        phoneCodeHashes.set(userId, result.phoneCodeHash);
         
         return res.json({ 
           success: true, 
@@ -188,23 +203,41 @@ app.post('/api/connect', async (req, res) => {
  */
 app.post('/api/verify-code', async (req, res) => {
   try {
+    console.log('[/api/verify-code] Request received:', { 
+      userId: req.body.userId, 
+      phone: req.body.phone,
+      hasPhoneCodeHash: !!req.body.phoneCodeHash,
+      code: req.body.code
+    });
+    
     const { userId, phone, apiId, apiHash, phoneCodeHash, code } = req.body;
     
-    // Получаем или создаем клиент
+    // ВАЖНО: Используем тот же клиент, который отправил код
+    // Если клиента нет, значит сервер перезапустился - нужно начать заново
     let client = clients.get(userId);
     if (!client) {
-      const session = new StringSession(null); // null для новой сессии
-      client = new TelegramClient(session, parseInt(apiId), apiHash, {
-        connectionRetries: 5,
+      console.error('[/api/verify-code] Client not found for userId:', userId);
+      return res.status(400).json({
+        success: false,
+        error: 'Клиент не найден. Начните подключение заново: /connect_bot'
       });
-      await client.connect();
     }
+    
+    // Используем сохраненный phoneCodeHash, если переданный не совпадает
+    const savedHash = phoneCodeHashes.get(userId);
+    const hashToUse = savedHash || phoneCodeHash;
+    
+    if (savedHash && savedHash !== phoneCodeHash) {
+      console.log('[/api/verify-code] Using saved phoneCodeHash instead of provided one');
+    }
+    
+    console.log('[/api/verify-code] Using existing client, verifying code with hash:', hashToUse);
     
     // Проверяем код
     try {
       const result = await client.invoke(new Api.auth.SignIn({
         phoneNumber: phone,
-        phoneCodeHash: phoneCodeHash,
+        phoneCodeHash: hashToUse,
         phoneCode: code
       }));
       
@@ -222,6 +255,9 @@ app.post('/api/verify-code', async (req, res) => {
       const sessionString = client.session.save();
       saveSession(userId, sessionString);
       
+      // Удаляем phoneCodeHash, так как он больше не нужен
+      phoneCodeHashes.delete(userId);
+      
       clients.set(userId, client);
       
       // Настраиваем обработчик сообщений
@@ -229,15 +265,25 @@ app.post('/api/verify-code', async (req, res) => {
         await handleNewMessage(event, userId);
       }, new Api.NewMessage({}));
       
+      console.log('[/api/verify-code] Authorization successful');
       return res.json({
         success: true,
         connected: true,
         requiresPassword: false
       });
     } catch (error) {
+      console.error('[/api/verify-code] SignIn error:', error.message);
+      console.error('[/api/verify-code] Error details:', {
+        message: error.message,
+        code: error.code,
+        type: error.constructor.name
+      });
+      
       // Проверяем, требуется ли пароль
-      if (error.message && (error.message.includes('PASSWORD_HASH_INVALID') || error.message.includes('PASSWORD_REQUIRED'))) {
+      if (error.message && (error.message.includes('PASSWORD_HASH_INVALID') || error.message.includes('PASSWORD_REQUIRED') || error.code === 401)) {
         // Нужен пароль 2FA
+        console.log('[/api/verify-code] Password required');
+        // НЕ удаляем phoneCodeHash, он еще нужен для проверки пароля
         clients.set(userId, client);
         return res.json({
           success: true,
@@ -245,12 +291,16 @@ app.post('/api/verify-code', async (req, res) => {
         });
       }
       
-      if (error.message && (error.message.includes('PHONE_CODE_INVALID') || error.message.includes('PHONE_CODE_EXPIRED'))) {
+      // Проверяем ошибки кода
+      if (error.message && (error.message.includes('PHONE_CODE_INVALID') || error.message.includes('PHONE_CODE_EXPIRED') || error.code === 400)) {
+        console.error('[/api/verify-code] Invalid or expired code');
         return res.json({
           success: false,
-          error: 'Неверный или истекший код'
+          error: 'Неверный или истекший код. Попробуйте запросить новый код: /connect_bot'
         });
       }
+      
+      console.error('[/api/verify-code] Unexpected error:', error);
       throw error;
     }
   } catch (error) {
@@ -299,6 +349,9 @@ app.post('/api/verify-password', async (req, res) => {
       // Сохраняем сессию
       const sessionString = client.session.save();
       saveSession(userId, sessionString);
+      
+      // Удаляем phoneCodeHash, так как он больше не нужен
+      phoneCodeHashes.delete(userId);
       
       clients.set(userId, client);
       
