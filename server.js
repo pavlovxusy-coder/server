@@ -44,6 +44,21 @@ const WORKERS_WEBHOOK_KEY = process.env.WORKERS_WEBHOOK_KEY;
 // Хранилище клиентов (в реальности используйте базу данных)
 const clients = new Map();
 
+// Хранилище сессий (в реальности используйте базу данных)
+const sessions = new Map();
+
+// Получить сохраненную сессию
+function getSavedSession(userId) {
+  return sessions.get(userId) || null;
+}
+
+// Сохранить сессию
+function saveSession(userId, sessionString) {
+  if (sessionString) {
+    sessions.set(userId, sessionString);
+  }
+}
+
 // Middleware для проверки авторизации
 function checkAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -101,8 +116,9 @@ app.post('/api/connect', async (req, res) => {
     }
     
     // Создаем сессию
-    const sessionString = `userbot_${userId}`;
-    const session = new StringSession(sessionString);
+    // StringSession требует либо валидную строку сессии, либо null/undefined для новой сессии
+    // Используем null для новой сессии
+    const session = new StringSession(null);
     
     // Создаем клиент
     const client = new TelegramClient(session, parseInt(apiId), apiHash, {
@@ -122,6 +138,10 @@ app.post('/api/connect', async (req, res) => {
       try {
         const result = await client.sendCode({ apiId, apiHash }, phone);
         console.log('[/api/connect] Code sent successfully, phoneCodeHash:', result.phoneCodeHash);
+        
+        // Сохраняем клиент для последующего использования
+        clients.set(userId, client);
+        
         return res.json({ 
           success: true, 
           phoneCodeHash: result.phoneCodeHash,
@@ -138,6 +158,10 @@ app.post('/api/connect', async (req, res) => {
     }
     
     console.log('[/api/connect] Already authorized');
+    
+    // Сохраняем сессию
+    const sessionString = client.session.save();
+    saveSession(userId, sessionString);
     
     // Сохраняем клиент
     clients.set(userId, client);
@@ -169,7 +193,7 @@ app.post('/api/verify-code', async (req, res) => {
     // Получаем или создаем клиент
     let client = clients.get(userId);
     if (!client) {
-      const session = new StringSession(`userbot_${userId}`);
+      const session = new StringSession(null); // null для новой сессии
       client = new TelegramClient(session, parseInt(apiId), apiHash, {
         connectionRetries: 5,
       });
@@ -194,6 +218,10 @@ app.post('/api/verify-code', async (req, res) => {
       }
       
       // Авторизация успешна, пароль не требуется
+      // Сохраняем сессию
+      const sessionString = client.session.save();
+      saveSession(userId, sessionString);
+      
       clients.set(userId, client);
       
       // Настраиваем обработчик сообщений
@@ -241,7 +269,7 @@ app.post('/api/verify-password', async (req, res) => {
     // Получаем клиент
     let client = clients.get(userId);
     if (!client) {
-      const session = new StringSession(`userbot_${userId}`);
+      const session = new StringSession(null); // null для новой сессии
       client = new TelegramClient(session, parseInt(apiId), apiHash, {
         connectionRetries: 5,
       });
@@ -268,6 +296,10 @@ app.post('/api/verify-password', async (req, res) => {
       }));
       
       // Пароль верный, авторизация завершена
+      // Сохраняем сессию
+      const sessionString = client.session.save();
+      saveSession(userId, sessionString);
+      
       clients.set(userId, client);
       
       // Настраиваем обработчик сообщений
@@ -308,7 +340,9 @@ app.post('/api/voice-reply', async (req, res) => {
     let client = clients.get(userId);
     if (!client) {
       // Переподключаемся если нужно
-      const session = new StringSession(`userbot_${userId}`);
+      // Используем сохраненную сессию, если есть, иначе null для новой
+      const savedSession = await getSavedSession(userId);
+      const session = new StringSession(savedSession || null);
       client = new TelegramClient(session, parseInt(apiId), apiHash, {
         connectionRetries: 5,
       });
