@@ -20,6 +20,20 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
+// Импорт Password (может быть в разных местах в зависимости от версии)
+let computeCheck;
+try {
+  computeCheck = require('telegram/Password').computeCheck;
+} catch (e) {
+  try {
+    const { Password } = require('telegram');
+    computeCheck = Password.computeCheck;
+  } catch (e2) {
+    console.warn('Could not import computeCheck, password verification will not work');
+    computeCheck = null;
+  }
+}
+
 const app = express();
 app.use(express.json());
 
@@ -210,7 +224,13 @@ app.post('/api/verify-password', async (req, res) => {
     const passwordInfo = await client.invoke(new Api.account.GetPassword());
     
     // Вычисляем хеш пароля
-    const { computeCheck } = require('telegram/Password');
+    if (!computeCheck) {
+      return res.json({
+        success: false,
+        error: 'Password verification not available'
+      });
+    }
+    
     const check = await computeCheck(passwordInfo, password);
     
     // Проверяем пароль
@@ -389,9 +409,24 @@ async function handleNewMessage(event, userId) {
   });
 }
 
+// Обработка ошибок при старте
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`User Bot server running on port ${PORT}`);
+  console.log('Environment check:');
+  console.log('- WORKERS_WEBHOOK_KEY:', WORKERS_WEBHOOK_KEY ? 'SET' : 'NOT SET');
+  console.log('- YANDEX_API_KEY:', YANDEX_API_KEY ? 'SET' : 'NOT SET');
+  console.log('- WORKERS_WEBHOOK_URL:', WORKERS_WEBHOOK_URL || 'NOT SET');
 });
 
 
