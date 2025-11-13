@@ -119,9 +119,8 @@ app.post('/api/connect', async (req, res) => {
     }
     
     // Создаем сессию
-    // StringSession требует либо валидную строку сессии, либо null/undefined для новой сессии
-    // Используем null для новой сессии
-    const session = new StringSession(null);
+    // StringSession требует пустую строку для новой сессии
+    const session = new StringSession('');
     
     // Создаем клиент
     const client = new TelegramClient(session, parseInt(apiId), apiHash, {
@@ -184,7 +183,7 @@ app.post('/api/connect', async (req, res) => {
     // Настраиваем обработчик сообщений
     client.addEventHandler(async (event) => {
       await handleNewMessage(event, userId);
-    }, new Api.NewMessage({}));
+    }, { chats: [] }); // Обрабатываем все новые сообщения
     
     res.json({ success: true, connected: true });
   } catch (error) {
@@ -272,7 +271,7 @@ app.post('/api/verify-code', async (req, res) => {
       // Настраиваем обработчик сообщений
       client.addEventHandler(async (event) => {
         await handleNewMessage(event, userId);
-      }, new Api.NewMessage({}));
+      }, { chats: [] }); // Обрабатываем все новые сообщения
       
       console.log('[/api/verify-code] Authorization successful');
       return res.json({
@@ -294,9 +293,10 @@ app.post('/api/verify-code', async (req, res) => {
       });
       
       // Проверяем, требуется ли пароль (2FA)
-      // Ошибка PASSWORD_REQUIRED означает, что код верный, но нужен пароль
+      // Ошибка SESSION_PASSWORD_NEEDED означает, что код верный, но нужен пароль
       if (errorMessage.includes('PASSWORD_REQUIRED') || 
           errorMessage.includes('PASSWORD_HASH_INVALID') ||
+          errorMessage.includes('SESSION_PASSWORD_NEEDED') ||
           errorCode === 401 ||
           errorClassName.includes('Password')) {
         console.log('[/api/verify-code] Password required (code was correct)');
@@ -357,7 +357,7 @@ app.post('/api/verify-password', async (req, res) => {
     // Получаем клиент
     let client = clients.get(userId);
     if (!client) {
-      const session = new StringSession(null); // null для новой сессии
+      const session = new StringSession(''); // Пустая строка для новой сессии
       client = new TelegramClient(session, parseInt(apiId), apiHash, {
         connectionRetries: 5,
       });
@@ -396,7 +396,7 @@ app.post('/api/verify-password', async (req, res) => {
       // Настраиваем обработчик сообщений
       client.addEventHandler(async (event) => {
         await handleNewMessage(event, userId);
-      }, new Api.NewMessage({}));
+      }, { chats: [] }); // Обрабатываем все новые сообщения
       
       return res.json({
         success: true,
@@ -433,7 +433,7 @@ app.post('/api/voice-reply', async (req, res) => {
       // Переподключаемся если нужно
       // Используем сохраненную сессию, если есть, иначе null для новой
       const savedSession = await getSavedSession(userId);
-      const session = new StringSession(savedSession || null);
+      const session = new StringSession(savedSession || '');
       client = new TelegramClient(session, parseInt(apiId), apiHash, {
         connectionRetries: 5,
       });
@@ -552,14 +552,18 @@ async function sendToWorkers(userId, type, result) {
  * Обработка новых сообщений
  */
 async function handleNewMessage(event, userId) {
-  const message = event.message;
-  
-  // Отправляем в Workers через webhook
-  await sendToWorkers(userId, 'message_received', {
-    text: message.text || '[медиа сообщение]',
-    chatId: message.chatId,
-    messageId: message.id
-  });
+  try {
+    const message = event.message;
+    
+    // Отправляем в Workers через webhook
+    await sendToWorkers(userId, 'message_received', {
+      text: message.text || '[медиа сообщение]',
+      chatId: message.chatId?.toString() || message.chat?.id?.toString() || 'unknown',
+      messageId: message.id?.toString() || 'unknown'
+    });
+  } catch (error) {
+    console.error('Error in handleNewMessage:', error);
+  }
 }
 
 // Обработка ошибок при старте
