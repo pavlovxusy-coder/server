@@ -30,11 +30,45 @@ const WORKERS_WEBHOOK_KEY = process.env.WORKERS_WEBHOOK_KEY;
 // Хранилище клиентов (в реальности используйте базу данных)
 const clients = new Map();
 
+// Middleware для проверки авторизации
+function checkAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const expectedAuth = `Bearer ${WORKERS_WEBHOOK_KEY}`;
+  
+  if (!authHeader || authHeader !== expectedAuth) {
+    console.error('Unauthorized request:', {
+      received: authHeader,
+      expected: expectedAuth.substring(0, 10) + '...',
+      hasKey: !!WORKERS_WEBHOOK_KEY
+    });
+    return res.status(401).json({ 
+      success: false, 
+      error: 'Unauthorized. Check WORKERS_WEBHOOK_KEY in Railway environment variables.' 
+    });
+  }
+  
+  next();
+}
+
+// Применяем проверку авторизации ко всем API эндпоинтам
+app.use('/api', checkAuth);
+
+// Эндпоинт для проверки здоровья сервера (без авторизации)
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    hasWebhookKey: !!WORKERS_WEBHOOK_KEY,
+    hasYandexKey: !!YANDEX_API_KEY
+  });
+});
+
 /**
  * Подключение User Bot
  */
 app.post('/api/connect', async (req, res) => {
   try {
+    console.log('[/api/connect] Request received:', { userId: req.body.userId, phone: req.body.phone });
     const { userId, phone, apiId, apiHash } = req.body;
     
     // Создаем сессию
@@ -47,16 +81,21 @@ app.post('/api/connect', async (req, res) => {
     });
     
     await client.connect();
+    console.log('[/api/connect] Client connected');
     
     // Отправляем код (если нужно)
     if (!await client.checkAuthorization()) {
+      console.log('[/api/connect] Not authorized, sending code...');
       const result = await client.sendCode({ apiId, apiHash }, phone);
+      console.log('[/api/connect] Code sent, phoneCodeHash:', result.phoneCodeHash);
       return res.json({ 
         success: true, 
         phoneCodeHash: result.phoneCodeHash,
         requiresCode: true 
       });
     }
+    
+    console.log('[/api/connect] Already authorized');
     
     // Сохраняем клиент
     clients.set(userId, client);
@@ -68,8 +107,13 @@ app.post('/api/connect', async (req, res) => {
     
     res.json({ success: true, connected: true });
   } catch (error) {
-    console.error('Connect error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('[/api/connect] Error:', error.message);
+    console.error('[/api/connect] Stack:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
