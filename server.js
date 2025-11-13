@@ -234,12 +234,21 @@ app.post('/api/verify-code', async (req, res) => {
     console.log('[/api/verify-code] Using existing client, verifying code with hash:', hashToUse);
     
     // Проверяем код
+    console.log('[/api/verify-code] Attempting SignIn with:', {
+      phone: phone,
+      phoneCodeHash: hashToUse,
+      codeLength: code.length,
+      code: code
+    });
+    
     try {
       const result = await client.invoke(new Api.auth.SignIn({
         phoneNumber: phone,
         phoneCodeHash: hashToUse,
         phoneCode: code
       }));
+      
+      console.log('[/api/verify-code] SignIn successful, result type:', result.constructor.name);
       
       // Если SignIn успешен, проверяем тип результата
       if (result instanceof Api.auth.AuthorizationSignUpRequired) {
@@ -272,17 +281,25 @@ app.post('/api/verify-code', async (req, res) => {
         requiresPassword: false
       });
     } catch (error) {
-      console.error('[/api/verify-code] SignIn error:', error.message);
-      console.error('[/api/verify-code] Error details:', {
-        message: error.message,
-        code: error.code,
-        type: error.constructor.name
+      // Детальная информация об ошибке
+      const errorMessage = error.message || '';
+      const errorCode = error.code || '';
+      const errorClassName = error.constructor.name;
+      
+      console.error('[/api/verify-code] SignIn error:', {
+        message: errorMessage,
+        code: errorCode,
+        type: errorClassName,
+        fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
       });
       
-      // Проверяем, требуется ли пароль
-      if (error.message && (error.message.includes('PASSWORD_HASH_INVALID') || error.message.includes('PASSWORD_REQUIRED') || error.code === 401)) {
-        // Нужен пароль 2FA
-        console.log('[/api/verify-code] Password required');
+      // Проверяем, требуется ли пароль (2FA)
+      // Ошибка PASSWORD_REQUIRED означает, что код верный, но нужен пароль
+      if (errorMessage.includes('PASSWORD_REQUIRED') || 
+          errorMessage.includes('PASSWORD_HASH_INVALID') ||
+          errorCode === 401 ||
+          errorClassName.includes('Password')) {
+        console.log('[/api/verify-code] Password required (code was correct)');
         // НЕ удаляем phoneCodeHash, он еще нужен для проверки пароля
         clients.set(userId, client);
         return res.json({
@@ -292,16 +309,37 @@ app.post('/api/verify-code', async (req, res) => {
       }
       
       // Проверяем ошибки кода
-      if (error.message && (error.message.includes('PHONE_CODE_INVALID') || error.message.includes('PHONE_CODE_EXPIRED') || error.code === 400)) {
-        console.error('[/api/verify-code] Invalid or expired code');
+      // Эти ошибки означают, что код неверный или истек
+      const isCodeError = 
+        errorMessage.includes('PHONE_CODE_INVALID') || 
+        errorMessage.includes('PHONE_CODE_EXPIRED') || 
+        errorMessage.includes('PHONE_CODE_EMPTY') ||
+        errorMessage.includes('CODE_INVALID') ||
+        errorMessage.includes('CODE_EXPIRED') ||
+        errorCode === 400 ||
+        errorCode === 'PHONE_CODE_INVALID' ||
+        errorCode === 'PHONE_CODE_EXPIRED' ||
+        errorClassName.includes('PhoneCode');
+      
+      if (isCodeError) {
+        console.error('[/api/verify-code] Invalid or expired code. Clearing state.');
+        
+        // Очищаем старый phoneCodeHash и клиент, чтобы можно было запросить новый код
+        phoneCodeHashes.delete(userId);
+        clients.delete(userId);
+        
         return res.json({
           success: false,
-          error: 'Неверный или истекший код. Попробуйте запросить новый код: /connect_bot'
+          error: 'Неверный или истекший код. Коды Telegram действительны ограниченное время. Начните подключение заново: /connect_bot'
         });
       }
       
+      // Другие ошибки
       console.error('[/api/verify-code] Unexpected error:', error);
-      throw error;
+      return res.status(500).json({
+        success: false,
+        error: `Ошибка при проверке кода: ${errorMessage || 'Неизвестная ошибка'}`
+      });
     }
   } catch (error) {
     console.error('Verify code error:', error);
