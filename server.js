@@ -1,4 +1,4 @@
-/**/**
+/**/
  * ПРИМЕР СЕРВЕРА USER BOT (Node.js)
  * 
  * Этот файл - пример того, как должен работать внешний сервер
@@ -223,5 +223,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`User Bot server running on port ${PORT}`);
 });
+
 
 
