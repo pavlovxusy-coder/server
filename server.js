@@ -82,8 +82,23 @@ app.get('/health', (req, res) => {
  */
 app.post('/api/connect', async (req, res) => {
   try {
-    console.log('[/api/connect] Request received:', { userId: req.body.userId, phone: req.body.phone });
+    console.log('[/api/connect] Request received:', { 
+      userId: req.body.userId, 
+      phone: req.body.phone,
+      apiId: req.body.apiId,
+      hasApiHash: !!req.body.apiHash
+    });
+    
     const { userId, phone, apiId, apiHash } = req.body;
+    
+    // Валидация входных данных
+    if (!phone || !apiId || !apiHash) {
+      console.error('[/api/connect] Missing required fields');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: phone, apiId, apiHash' 
+      });
+    }
     
     // Создаем сессию
     const sessionString = `userbot_${userId}`;
@@ -94,19 +109,32 @@ app.post('/api/connect', async (req, res) => {
       connectionRetries: 5,
     });
     
+    console.log('[/api/connect] Connecting to Telegram...');
     await client.connect();
     console.log('[/api/connect] Client connected');
     
     // Отправляем код (если нужно)
-    if (!await client.checkAuthorization()) {
-      console.log('[/api/connect] Not authorized, sending code...');
-      const result = await client.sendCode({ apiId, apiHash }, phone);
-      console.log('[/api/connect] Code sent, phoneCodeHash:', result.phoneCodeHash);
-      return res.json({ 
-        success: true, 
-        phoneCodeHash: result.phoneCodeHash,
-        requiresCode: true 
-      });
+    const isAuthorized = await client.checkAuthorization();
+    console.log('[/api/connect] Authorization status:', isAuthorized);
+    
+    if (!isAuthorized) {
+      console.log('[/api/connect] Not authorized, sending code to:', phone);
+      try {
+        const result = await client.sendCode({ apiId, apiHash }, phone);
+        console.log('[/api/connect] Code sent successfully, phoneCodeHash:', result.phoneCodeHash);
+        return res.json({ 
+          success: true, 
+          phoneCodeHash: result.phoneCodeHash,
+          requiresCode: true 
+        });
+      } catch (sendCodeError) {
+        console.error('[/api/connect] Error sending code:', sendCodeError.message);
+        console.error('[/api/connect] Error stack:', sendCodeError.stack);
+        return res.status(500).json({
+          success: false,
+          error: `Failed to send code: ${sendCodeError.message}`
+        });
+      }
     }
     
     console.log('[/api/connect] Already authorized');
