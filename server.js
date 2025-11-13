@@ -181,9 +181,10 @@ app.post('/api/connect', async (req, res) => {
     clients.set(userId, client);
     
     // Настраиваем обработчик сообщений
+    // Используем правильный способ для gramjs
     client.addEventHandler(async (event) => {
       await handleNewMessage(event, userId);
-    }, { chats: [] }); // Обрабатываем все новые сообщения
+    }); // Обрабатываем все новые сообщения
     
     res.json({ success: true, connected: true });
   } catch (error) {
@@ -554,15 +555,144 @@ async function sendToWorkers(userId, type, result) {
 async function handleNewMessage(event, userId) {
   try {
     const message = event.message;
+    const text = message.text || '';
+    const chatId = message.chatId || message.chat?.id;
     
-    // Отправляем в Workers через webhook
+    // Обработка команды .гс (расшифровка голосового сообщения)
+    if (text.trim() === '.гс' || text.trim() === '.voice') {
+      console.log(`[handleNewMessage] .гс command detected for user ${userId}`);
+      
+      // Проверяем, есть ли reply на сообщение
+      // В gramjs reply может быть в разных местах в зависимости от версии
+      let replyToMsgId = null;
+      
+      // Вариант 1: через replyTo объект
+      if (message.replyTo) {
+        replyToMsgId = message.replyTo.replyToMsgId || 
+                      message.replyTo.replyToTopId ||
+                      message.replyTo.replyToMsgId;
+      }
+      
+      // Вариант 2: напрямую в message
+      if (!replyToMsgId) {
+        replyToMsgId = message.replyToMsgId;
+      }
+      
+      // Вариант 3: через replyMarkup
+      if (!replyToMsgId && message.replyMarkup) {
+        replyToMsgId = message.replyMarkup.replyToMsgId;
+      }
+      
+      console.log(`[handleNewMessage] Reply info:`, {
+        hasReplyTo: !!message.replyTo,
+        replyToMsgId: replyToMsgId,
+        messageKeys: Object.keys(message).slice(0, 10)
+      });
+      
+      if (!replyToMsgId) {
+        // Отправляем подсказку в тот же чат
+        const client = clients.get(userId);
+        if (client) {
+          try {
+            await client.sendMessage(chatId, {
+              message: '❌ Ответьте на голосовое сообщение командой .гс\n\nПример:\n1. Получите голосовое сообщение\n2. Ответьте на него: .гс'
+            });
+          } catch (e) {
+            console.error('Error sending hint:', e);
+          }
+        }
+        return;
+      }
+      
+      // Обрабатываем команду .гс
+      console.log(`[handleNewMessage] Processing .гс command for user ${userId}, replyTo: ${replyToMsgId}`);
+      await processVoiceCommand(userId, chatId, replyToMsgId);
+      return;
+    }
+    
+    // Отправляем в Workers через webhook (для других сообщений)
     await sendToWorkers(userId, 'message_received', {
-      text: message.text || '[медиа сообщение]',
-      chatId: message.chatId?.toString() || message.chat?.id?.toString() || 'unknown',
+      text: text || '[медиа сообщение]',
+      chatId: chatId?.toString() || 'unknown',
       messageId: message.id?.toString() || 'unknown'
     });
   } catch (error) {
     console.error('Error in handleNewMessage:', error);
+  }
+}
+
+/**
+ * Обработка команды .гс (расшифровка голосового сообщения)
+ */
+async function processVoiceCommand(userId, chatId, messageId) {
+  try {
+    const client = clients.get(userId);
+    if (!client) {
+      console.error(`[processVoiceCommand] Client not found for user ${userId}`);
+      return;
+    }
+    
+    // Получаем сообщение, на которое отвечаем
+    const voiceMessage = await client.getMessages(chatId, { ids: [messageId] });
+    
+    if (!voiceMessage || voiceMessage.length === 0) {
+      await client.sendMessage(chatId, {
+        message: '❌ Сообщение не найдено'
+      });
+      return;
+    }
+    
+    const targetMessage = voiceMessage[0];
+    
+    // Проверяем, что это голосовое сообщение
+    if (!targetMessage.voice) {
+      await client.sendMessage(chatId, {
+        message: '❌ Это не голосовое сообщение'
+      });
+      return;
+    }
+    
+    // Скачиваем голосовое сообщение
+    const buffer = await client.downloadMedia(targetMessage, {});
+    const audioPath = path.join(__dirname, `temp_${userId}_${Date.now()}.ogg`);
+    fs.writeFileSync(audioPath, buffer);
+    
+    // Отправляем на Яндекс SpeechKit для расшифровки
+    const transcription = await transcribeAudio(audioPath);
+    
+    // Удаляем временный файл
+    try {
+      fs.unlinkSync(audioPath);
+    } catch (e) {
+      // Игнорируем ошибки удаления
+    }
+    
+    // Отправляем расшифровку как ответ на голосовое сообщение
+    await client.sendMessage(chatId, {
+      message: `📝 Расшифровка:\n\n"${transcription}"`,
+      replyTo: targetMessage.id
+    });
+    
+    // Отправляем результат в Workers
+    await sendToWorkers(userId, 'voice_transcribed', {
+      text: transcription,
+      chatId: chatId?.toString(),
+      messageId: messageId?.toString()
+    });
+    
+    console.log(`[processVoiceCommand] Successfully transcribed voice message for user ${userId}`);
+  } catch (error) {
+    console.error('[processVoiceCommand] Error:', error);
+    const client = clients.get(userId);
+    if (client) {
+      try {
+        await client.sendMessage(chatId, {
+          message: `❌ Ошибка при расшифровке: ${error.message}`
+        });
+      } catch (e) {
+        // Игнорируем ошибки отправки
+      }
+    }
   }
 }
 
