@@ -8,7 +8,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "telegram": "^2.23.0",
-    "gramjs": "^2.0.0",
     "axios": "^1.6.0"
   },
   "engines": {
