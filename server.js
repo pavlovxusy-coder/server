@@ -74,6 +74,135 @@ app.post('/api/connect', async (req, res) => {
 });
 
 /**
+ * Проверка кода подтверждения
+ */
+app.post('/api/verify-code', async (req, res) => {
+  try {
+    const { userId, phone, apiId, apiHash, phoneCodeHash, code } = req.body;
+    
+    // Получаем или создаем клиент
+    let client = clients.get(userId);
+    if (!client) {
+      const session = new StringSession(`userbot_${userId}`);
+      client = new TelegramClient(session, parseInt(apiId), apiHash, {
+        connectionRetries: 5,
+      });
+      await client.connect();
+    }
+    
+    // Проверяем код
+    try {
+      const result = await client.invoke(new Api.auth.SignIn({
+        phoneNumber: phone,
+        phoneCodeHash: phoneCodeHash,
+        phoneCode: code
+      }));
+      
+      // Если SignIn успешен, проверяем тип результата
+      if (result instanceof Api.auth.AuthorizationSignUpRequired) {
+        // Нужна регистрация (не должно быть для существующих аккаунтов)
+        return res.json({
+          success: false,
+          error: 'Аккаунт не найден'
+        });
+      }
+      
+      // Авторизация успешна, пароль не требуется
+      clients.set(userId, client);
+      
+      // Настраиваем обработчик сообщений
+      client.addEventHandler(async (event) => {
+        await handleNewMessage(event, userId);
+      }, new Api.NewMessage({}));
+      
+      return res.json({
+        success: true,
+        connected: true,
+        requiresPassword: false
+      });
+    } catch (error) {
+      // Проверяем, требуется ли пароль
+      if (error.message && (error.message.includes('PASSWORD_HASH_INVALID') || error.message.includes('PASSWORD_REQUIRED'))) {
+        // Нужен пароль 2FA
+        clients.set(userId, client);
+        return res.json({
+          success: true,
+          requiresPassword: true
+        });
+      }
+      
+      if (error.message && (error.message.includes('PHONE_CODE_INVALID') || error.message.includes('PHONE_CODE_EXPIRED'))) {
+        return res.json({
+          success: false,
+          error: 'Неверный или истекший код'
+        });
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error('Verify code error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Проверка пароля 2FA
+ */
+app.post('/api/verify-password', async (req, res) => {
+  try {
+    const { userId, phone, apiId, apiHash, password } = req.body;
+    
+    // Получаем клиент
+    let client = clients.get(userId);
+    if (!client) {
+      const session = new StringSession(`userbot_${userId}`);
+      client = new TelegramClient(session, parseInt(apiId), apiHash, {
+        connectionRetries: 5,
+      });
+      await client.connect();
+    }
+    
+    // Получаем информацию о пароле
+    const passwordInfo = await client.invoke(new Api.account.GetPassword());
+    
+    // Вычисляем хеш пароля
+    const { computeCheck } = require('telegram/Password');
+    const check = await computeCheck(passwordInfo, password);
+    
+    // Проверяем пароль
+    try {
+      const result = await client.invoke(new Api.auth.CheckPassword({
+        password: check
+      }));
+      
+      // Пароль верный, авторизация завершена
+      clients.set(userId, client);
+      
+      // Настраиваем обработчик сообщений
+      client.addEventHandler(async (event) => {
+        await handleNewMessage(event, userId);
+      }, new Api.NewMessage({}));
+      
+      return res.json({
+        success: true,
+        connected: true
+      });
+    } catch (error) {
+      if (error.message && error.message.includes('PASSWORD_HASH_INVALID')) {
+        return res.json({
+          success: false,
+          error: 'Неверный пароль'
+        });
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error('Verify password error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * Обработка команды .гс (расшифровка голосового сообщения)
  * 
  * Пользователь отвечает на голосовое сообщение командой .гс
