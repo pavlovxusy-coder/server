@@ -1,4 +1,3 @@
-
 /**
  * User Bot Server для Telegram с интеграцией Яндекс SpeechKit
  * 
@@ -424,6 +423,49 @@ app.post('/api/verify-password', async (req, res) => {
 });
 
 /**
+ * Отключение User Bot
+ */
+app.post('/api/disconnect', checkAuth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'Missing userId' });
+    }
+    
+    console.log(`[/api/disconnect] Disconnecting user ${userId}`);
+    
+    // Получаем клиент
+    const client = clients.get(userId);
+    
+    if (client) {
+      try {
+        // Отключаемся от Telegram
+        await client.disconnect();
+        console.log(`[/api/disconnect] Client disconnected for user ${userId}`);
+      } catch (error) {
+        console.error(`[/api/disconnect] Error disconnecting client:`, error);
+      }
+      
+      // Удаляем клиент из Map
+      clients.delete(userId);
+      console.log(`[/api/disconnect] Client removed from Map for user ${userId}`);
+    }
+    
+    // Удаляем сессию
+    sessions.delete(userId);
+    phoneCodeHashes.delete(userId);
+    
+    console.log(`[/api/disconnect] User ${userId} disconnected successfully`);
+    
+    res.json({ success: true, disconnected: true });
+  } catch (error) {
+    console.error('[/api/disconnect] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * Обработка команды .гс (расшифровка голосового сообщения)
  * 
  * Пользователь отвечает на голосовое сообщение командой .гс
@@ -563,19 +605,10 @@ async function handleNewMessage(event, userId) {
     const text = message.text || '';
     const chatId = message.chatId || message.chat?.id;
     
-    // Логируем все сообщения для отладки
-    console.log(`[handleNewMessage] New message from user ${userId}:`, {
-      text: text.substring(0, 50),
-      chatId: chatId,
-      messageId: message.id,
-      hasReplyTo: !!message.replyTo,
-      messageType: message.constructor?.name || typeof message
-    });
-    
     // Обработка команды .гс (расшифровка голосового сообщения)
+    // НЕ логируем все сообщения - это вызывает спам!
     if (text.trim() === '.гс' || text.trim() === '.voice') {
       console.log(`[handleNewMessage] .гс command detected for user ${userId}`);
-      console.log(`[handleNewMessage] Full message object:`, JSON.stringify(message, null, 2).substring(0, 1000));
       
       // Проверяем, есть ли reply на сообщение
       // В gramjs reply может быть в разных местах в зависимости от версии
@@ -636,12 +669,8 @@ async function handleNewMessage(event, userId) {
       return;
     }
     
-    // Отправляем в Workers через webhook (для других сообщений)
-    await sendToWorkers(userId, 'message_received', {
-      text: text || '[медиа сообщение]',
-      chatId: chatId?.toString() || 'unknown',
-      messageId: message.id?.toString() || 'unknown'
-    });
+    // НЕ отправляем обычные сообщения в Workers - это вызывает спам
+    // Обрабатываем только команду .гс
   } catch (error) {
     console.error('Error in handleNewMessage:', error);
     console.error('Error stack:', error.stack);
@@ -742,4 +771,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('- YANDEX_API_KEY:', YANDEX_API_KEY ? 'SET' : 'NOT SET');
   console.log('- WORKERS_WEBHOOK_URL:', WORKERS_WEBHOOK_URL || 'NOT SET');
 });
+
 
