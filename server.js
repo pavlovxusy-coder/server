@@ -504,12 +504,34 @@ app.post('/api/voice-reply', async (req, res) => {
     }
     
     // Скачиваем голосовое сообщение
+    console.log(`[/api/voice-reply] Downloading voice message for user ${userId}`);
     const buffer = await client.downloadMedia(targetMessage, {});
+    
+    if (!buffer || buffer.length === 0) {
+      return res.json({ success: false, error: 'Не удалось скачать голосовое сообщение' });
+    }
+    
+    console.log(`[/api/voice-reply] Downloaded ${buffer.length} bytes`);
+    
+    // Сохраняем во временный файл
     const audioPath = path.join(__dirname, `temp_${userId}_${Date.now()}.ogg`);
     fs.writeFileSync(audioPath, buffer);
     
+    console.log(`[/api/voice-reply] Saved to ${audioPath}, file size: ${fs.statSync(audioPath).size} bytes`);
+    
+    // Проверяем первые байты файла (OGG заголовок должен начинаться с "OggS")
+    const fileHeader = buffer.slice(0, 4).toString('ascii');
+    console.log(`[/api/voice-reply] File header: ${fileHeader} (should be "OggS")`);
+    
+    // Определяем формат аудио
+    let audioEncoding = 'OGG_OPUS';
+    if (fileHeader !== 'OggS') {
+      console.warn(`[/api/voice-reply] File doesn't have OGG header (got: ${fileHeader}), trying RAW_OPUS`);
+      audioEncoding = 'RAW_OPUS';
+    }
+    
     // Отправляем на Яндекс SpeechKit для расшифровки
-    const transcription = await transcribeAudio(audioPath);
+    const transcription = await transcribeAudio(audioPath, audioEncoding);
     
     // Удаляем временный файл
     try {
@@ -539,11 +561,20 @@ app.post('/api/voice-reply', async (req, res) => {
 /**
  * Расшифровка аудио через Яндекс SpeechKit
  */
-async function transcribeAudio(audioPath) {
+async function transcribeAudio(audioPath, audioEncoding = 'OGG_OPUS') {
   try {
-    // Читаем файл
+    // Читаем файл как бинарные данные
     const audioData = fs.readFileSync(audioPath);
+    
+    // Проверяем, что файл не пустой
+    if (!audioData || audioData.length === 0) {
+      throw new Error('Аудио файл пустой');
+    }
+    
+    // Конвертируем в base64
     const base64Audio = audioData.toString('base64');
+    
+    console.log(`[transcribeAudio] File size: ${audioData.length} bytes, base64 length: ${base64Audio.length}, encoding: ${audioEncoding}`);
     
     // Отправляем на Яндекс SpeechKit
     const response = await axios.post(
@@ -553,7 +584,7 @@ async function transcribeAudio(audioPath) {
           specification: {
             languageCode: 'ru-RU',
             model: 'general',
-            audioEncoding: 'OGG_OPUS',
+            audioEncoding: audioEncoding,
             sampleRateHertz: 48000
           }
         },
@@ -569,10 +600,19 @@ async function transcribeAudio(audioPath) {
       }
     );
     
+    if (!response.data || !response.data.result || !response.data.result.alternatives || response.data.result.alternatives.length === 0) {
+      throw new Error('Пустой ответ от SpeechKit');
+    }
+    
     return response.data.result.alternatives[0].text;
   } catch (error) {
     console.error('Transcription error:', error);
-    throw new Error('Ошибка расшифровки аудио');
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+      throw new Error(`Ошибка расшифровки аудио: ${error.response.data?.error_message || error.message}`);
+    }
+    throw new Error(`Ошибка расшифровки аудио: ${error.message}`);
   }
 }
 
@@ -709,12 +749,34 @@ async function processVoiceCommand(userId, chatId, messageId) {
     }
     
     // Скачиваем голосовое сообщение
+    console.log(`[/api/voice-reply] Downloading voice message for user ${userId}`);
     const buffer = await client.downloadMedia(targetMessage, {});
+    
+    if (!buffer || buffer.length === 0) {
+      return res.json({ success: false, error: 'Не удалось скачать голосовое сообщение' });
+    }
+    
+    console.log(`[/api/voice-reply] Downloaded ${buffer.length} bytes`);
+    
+    // Сохраняем во временный файл
     const audioPath = path.join(__dirname, `temp_${userId}_${Date.now()}.ogg`);
     fs.writeFileSync(audioPath, buffer);
     
+    console.log(`[/api/voice-reply] Saved to ${audioPath}, file size: ${fs.statSync(audioPath).size} bytes`);
+    
+    // Проверяем первые байты файла (OGG заголовок должен начинаться с "OggS")
+    const fileHeader = buffer.slice(0, 4).toString('ascii');
+    console.log(`[/api/voice-reply] File header: ${fileHeader} (should be "OggS")`);
+    
+    // Определяем формат аудио
+    let audioEncoding = 'OGG_OPUS';
+    if (fileHeader !== 'OggS') {
+      console.warn(`[/api/voice-reply] File doesn't have OGG header (got: ${fileHeader}), trying RAW_OPUS`);
+      audioEncoding = 'RAW_OPUS';
+    }
+    
     // Отправляем на Яндекс SpeechKit для расшифровки
-    const transcription = await transcribeAudio(audioPath);
+    const transcription = await transcribeAudio(audioPath, audioEncoding);
     
     // Удаляем временный файл
     try {
