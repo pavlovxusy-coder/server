@@ -1,3 +1,4 @@
+
 /**
  * User Bot Server для Telegram с интеграцией Яндекс SpeechKit
  * 
@@ -16,6 +17,7 @@ const express = require('express');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { Api } = require('telegram/tl');
+const { NewMessage } = require('telegram/events');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -181,10 +183,11 @@ app.post('/api/connect', async (req, res) => {
     clients.set(userId, client);
     
     // Настраиваем обработчик сообщений
-    // Используем правильный способ для gramjs
+    // Используем правильный способ для gramjs - NewMessage event
     client.addEventHandler(async (event) => {
+      console.log(`[Event Handler] New event for user ${userId}:`, event.constructor?.name || typeof event);
       await handleNewMessage(event, userId);
-    }); // Обрабатываем все новые сообщения
+    }, new NewMessage({})); // Обрабатываем все новые сообщения
     
     res.json({ success: true, connected: true });
   } catch (error) {
@@ -271,8 +274,9 @@ app.post('/api/verify-code', async (req, res) => {
       
       // Настраиваем обработчик сообщений
       client.addEventHandler(async (event) => {
+        console.log(`[Event Handler] New event for user ${userId}:`, event.constructor?.name || typeof event);
         await handleNewMessage(event, userId);
-      }, { chats: [] }); // Обрабатываем все новые сообщения
+      }, new NewMessage({})); // Обрабатываем все новые сообщения
       
       console.log('[/api/verify-code] Authorization successful');
       return res.json({
@@ -396,8 +400,9 @@ app.post('/api/verify-password', async (req, res) => {
       
       // Настраиваем обработчик сообщений
       client.addEventHandler(async (event) => {
+        console.log(`[Event Handler] New event for user ${userId}:`, event.constructor?.name || typeof event);
         await handleNewMessage(event, userId);
-      }, { chats: [] }); // Обрабатываем все новые сообщения
+      }, new NewMessage({})); // Обрабатываем все новые сообщения
       
       return res.json({
         success: true,
@@ -558,36 +563,54 @@ async function handleNewMessage(event, userId) {
     const text = message.text || '';
     const chatId = message.chatId || message.chat?.id;
     
+    // Логируем все сообщения для отладки
+    console.log(`[handleNewMessage] New message from user ${userId}:`, {
+      text: text.substring(0, 50),
+      chatId: chatId,
+      messageId: message.id,
+      hasReplyTo: !!message.replyTo,
+      messageType: message.constructor?.name || typeof message
+    });
+    
     // Обработка команды .гс (расшифровка голосового сообщения)
     if (text.trim() === '.гс' || text.trim() === '.voice') {
       console.log(`[handleNewMessage] .гс command detected for user ${userId}`);
+      console.log(`[handleNewMessage] Full message object:`, JSON.stringify(message, null, 2).substring(0, 1000));
       
       // Проверяем, есть ли reply на сообщение
       // В gramjs reply может быть в разных местах в зависимости от версии
       let replyToMsgId = null;
       
-      // Вариант 1: через replyTo объект
+      // Вариант 1: через replyTo объект (самый распространенный)
       if (message.replyTo) {
+        console.log(`[handleNewMessage] Found replyTo object:`, {
+          keys: Object.keys(message.replyTo),
+          replyToMsgId: message.replyTo.replyToMsgId,
+          replyToTopId: message.replyTo.replyToTopId
+        });
         replyToMsgId = message.replyTo.replyToMsgId || 
-                      message.replyTo.replyToTopId ||
-                      message.replyTo.replyToMsgId;
+                      message.replyTo.replyToTopId;
       }
       
       // Вариант 2: напрямую в message
-      if (!replyToMsgId) {
+      if (!replyToMsgId && message.replyToMsgId) {
+        console.log(`[handleNewMessage] Found replyToMsgId directly:`, message.replyToMsgId);
         replyToMsgId = message.replyToMsgId;
       }
       
       // Вариант 3: через replyMarkup
       if (!replyToMsgId && message.replyMarkup) {
+        console.log(`[handleNewMessage] Checking replyMarkup:`, message.replyMarkup);
         replyToMsgId = message.replyMarkup.replyToMsgId;
       }
       
-      console.log(`[handleNewMessage] Reply info:`, {
-        hasReplyTo: !!message.replyTo,
-        replyToMsgId: replyToMsgId,
-        messageKeys: Object.keys(message).slice(0, 10)
-      });
+      // Вариант 4: через pattern matching (если есть)
+      if (!replyToMsgId && message.patternMatch) {
+        console.log(`[handleNewMessage] Checking patternMatch:`, message.patternMatch);
+        replyToMsgId = message.patternMatch.replyToMsgId;
+      }
+      
+      console.log(`[handleNewMessage] Final replyToMsgId:`, replyToMsgId);
       
       if (!replyToMsgId) {
         // Отправляем подсказку в тот же чат
@@ -597,15 +620,18 @@ async function handleNewMessage(event, userId) {
             await client.sendMessage(chatId, {
               message: '❌ Ответьте на голосовое сообщение командой .гс\n\nПример:\n1. Получите голосовое сообщение\n2. Ответьте на него: .гс'
             });
+            console.log(`[handleNewMessage] Sent hint to user ${userId} in chat ${chatId}`);
           } catch (e) {
             console.error('Error sending hint:', e);
           }
+        } else {
+          console.error(`[handleNewMessage] Client not found for user ${userId}`);
         }
         return;
       }
       
       // Обрабатываем команду .гс
-      console.log(`[handleNewMessage] Processing .гс command for user ${userId}, replyTo: ${replyToMsgId}`);
+      console.log(`[handleNewMessage] Processing .гс command for user ${userId}, chatId: ${chatId}, replyTo: ${replyToMsgId}`);
       await processVoiceCommand(userId, chatId, replyToMsgId);
       return;
     }
@@ -618,6 +644,7 @@ async function handleNewMessage(event, userId) {
     });
   } catch (error) {
     console.error('Error in handleNewMessage:', error);
+    console.error('Error stack:', error.stack);
   }
 }
 
@@ -715,5 +742,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('- YANDEX_API_KEY:', YANDEX_API_KEY ? 'SET' : 'NOT SET');
   console.log('- WORKERS_WEBHOOK_URL:', WORKERS_WEBHOOK_URL || 'NOT SET');
 });
-
 
